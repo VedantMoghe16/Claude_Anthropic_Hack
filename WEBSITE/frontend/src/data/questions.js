@@ -1,0 +1,238 @@
+export const SUPPORT_CATEGORIES = [
+  { id: "agriculture", labelKey: "onboarding.category.agriculture" },
+  { id: "business", labelKey: "onboarding.category.business" },
+  { id: "employment", labelKey: "onboarding.category.employment" },
+  { id: "education", labelKey: "onboarding.category.education" },
+  { id: "housing", labelKey: "onboarding.category.housing" },
+]
+
+const commonCategoryOptions = [
+  { value: "general", labelKey: "onboarding.options.general" },
+  { value: "obc", labelKey: "onboarding.options.obc" },
+  { value: "sc", labelKey: "onboarding.options.sc" },
+  { value: "st", labelKey: "onboarding.options.st" },
+]
+
+export const QUESTIONS_BY_CATEGORY = {
+  agriculture: [
+    {
+      id: "income",
+      textKey: "onboarding.questions.income",
+      type: "number",
+      placeholderKey: "onboarding.placeholders.income150000",
+      sampleTranscriptKey: "onboarding.transcripts.income15",
+    },
+    {
+      id: "ownsLand",
+      textKey: "onboarding.questions.ownsLand",
+      type: "select",
+      options: [
+        { value: "yes", labelKey: "common.yes" },
+        { value: "no", labelKey: "common.no" },
+      ],
+      placeholderKey: "onboarding.placeholders.yesNo",
+      sampleTranscriptKey: "onboarding.transcripts.ownsLandYes",
+    },
+    {
+      id: "landAcres",
+      textKey: "onboarding.questions.landAcres",
+      type: "number",
+      placeholderKey: "onboarding.placeholders.landAcres2",
+      sampleTranscriptKey: "onboarding.transcripts.landAcres2",
+    },
+    {
+      id: "bpl",
+      textKey: "onboarding.questions.bpl",
+      type: "select",
+      options: [
+        { value: "yes", labelKey: "common.yes" },
+        { value: "no", labelKey: "common.no" },
+      ],
+      placeholderKey: "onboarding.placeholders.yesNo",
+      sampleTranscriptKey: "onboarding.transcripts.bplYes",
+    },
+    {
+      id: "casteCategory",
+      textKey: "onboarding.questions.casteCategory",
+      type: "select",
+      options: commonCategoryOptions,
+      placeholderKey: "onboarding.placeholders.selectCategory",
+      sampleTranscriptKey: "onboarding.transcripts.casteObc",
+    },
+  ],
+  business: [
+    {
+      id: "ownsBusiness",
+      textKey: "onboarding.questions.ownsBusiness",
+      type: "select",
+      options: [
+        { value: "yes", labelKey: "common.yes" },
+        { value: "no", labelKey: "common.no" },
+      ],
+      placeholderKey: "onboarding.placeholders.yesNo",
+      sampleTranscriptKey: "onboarding.transcripts.businessPlan",
+    },
+    {
+      id: "income",
+      textKey: "onboarding.questions.income",
+      type: "number",
+      placeholderKey: "onboarding.placeholders.income220000",
+      sampleTranscriptKey: "onboarding.transcripts.income22",
+    },
+    {
+      id: "casteCategory",
+      textKey: "onboarding.questions.casteCategory",
+      type: "select",
+      options: commonCategoryOptions,
+      placeholderKey: "onboarding.placeholders.selectCategory",
+      sampleTranscriptKey: "onboarding.transcripts.casteSc",
+    },
+    {
+      id: "isTribal",
+      textKey: "onboarding.questions.isTribal",
+      type: "select",
+      options: [
+        { value: "yes", labelKey: "common.yes" },
+        { value: "no", labelKey: "common.no" },
+      ],
+      placeholderKey: "onboarding.placeholders.yesNo",
+      sampleTranscriptKey: "onboarding.transcripts.no",
+    },
+    {
+      id: "employees",
+      textKey: "onboarding.questions.employees",
+      type: "number",
+      placeholderKey: "onboarding.placeholders.employees3",
+      sampleTranscriptKey: "onboarding.transcripts.employees3",
+    },
+  ],
+  employment: [
+    {
+      id: "income",
+      textKey: "onboarding.questions.income",
+      type: "number",
+      placeholderKey: "onboarding.placeholders.income130000",
+      sampleTranscriptKey: "onboarding.transcripts.income13",
+    },
+    {
+      id: "employmentDays",
+      textKey: "onboarding.questions.employmentDays",
+      type: "number",
+      placeholderKey: "onboarding.placeholders.employmentDays120",
+      sampleTranscriptKey: "onboarding.transcripts.days120",
+    },
+    {
+      id: "bpl",
+      textKey: "onboarding.questions.bpl",
+      type: "select",
+      options: [
+        { value: "yes", labelKey: "common.yes" },
+        { value: "no", labelKey: "common.no" },
+      ],
+      placeholderKey: "onboarding.placeholders.yesNo",
+      sampleTranscriptKey: "onboarding.transcripts.yes",
+    },
+    {
+      id: "state",
+      textKey: "onboarding.questions.state",
+      type: "text",
+      placeholderKey: "onboarding.placeholders.stateMaharashtra",
+      sampleTranscriptKey: "onboarding.transcripts.stateMaharashtra",
+    },
+    {
+      id: "occupation",
+      textKey: "onboarding.questions.occupation",
+      type: "text",
+      placeholderKey: "onboarding.placeholders.occupationDailyWage",
+      sampleTranscriptKey: "onboarding.transcripts.occupationDailyWage",
+    },
+  ],
+  education: [
+    {
+      id: "isStudent",
+      textKey: "onboarding.questions.isStudent",
+      type: "select",
+      options: [
+        { value: "student", labelKey: "onboarding.options.student" },
+        { value: "child", labelKey: "onboarding.options.child" },
+      ],
+      placeholderKey: "onboarding.placeholders.studentOrChild",
+      sampleTranscriptKey: "onboarding.transcripts.childPrompt",
+    },
+    {
+      id: "income",
+      textKey: "onboarding.questions.income",
+      type: "number",
+      placeholderKey: "onboarding.placeholders.income180000",
+      sampleTranscriptKey: "onboarding.transcripts.income18",
+    },
+    {
+      id: "hasGirlChild",
+      textKey: "onboarding.questions.hasGirlChild",
+      type: "select",
+      options: [
+        { value: "yes", labelKey: "common.yes" },
+        { value: "no", labelKey: "common.no" },
+      ],
+      placeholderKey: "onboarding.placeholders.yesNo",
+      sampleTranscriptKey: "onboarding.transcripts.yes",
+    },
+    {
+      id: "casteCategory",
+      textKey: "onboarding.questions.casteCategory",
+      type: "select",
+      options: commonCategoryOptions,
+      placeholderKey: "onboarding.placeholders.selectCategory",
+      sampleTranscriptKey: "onboarding.transcripts.casteSt",
+    },
+    {
+      id: "educationLevel",
+      textKey: "onboarding.questions.educationLevel",
+      type: "text",
+      placeholderKey: "onboarding.placeholders.educationClass10",
+      sampleTranscriptKey: "onboarding.transcripts.class10",
+    },
+  ],
+  housing: [
+    {
+      id: "income",
+      textKey: "onboarding.questions.income",
+      type: "number",
+      placeholderKey: "onboarding.placeholders.income200000",
+      sampleTranscriptKey: "onboarding.transcripts.income2",
+    },
+    {
+      id: "bpl",
+      textKey: "onboarding.questions.bpl",
+      type: "select",
+      options: [
+        { value: "yes", labelKey: "common.yes" },
+        { value: "no", labelKey: "common.no" },
+      ],
+      placeholderKey: "onboarding.placeholders.yesNo",
+      sampleTranscriptKey: "onboarding.transcripts.no",
+    },
+    {
+      id: "housingStatus",
+      textKey: "onboarding.questions.housingStatus",
+      type: "text",
+      placeholderKey: "onboarding.placeholders.housingKutcha",
+      sampleTranscriptKey: "onboarding.transcripts.kutchaHouse",
+    },
+    {
+      id: "casteCategory",
+      textKey: "onboarding.questions.casteCategory",
+      type: "select",
+      options: commonCategoryOptions,
+      placeholderKey: "onboarding.placeholders.selectCategory",
+      sampleTranscriptKey: "onboarding.transcripts.casteObc",
+    },
+    {
+      id: "state",
+      textKey: "onboarding.questions.state",
+      type: "text",
+      placeholderKey: "onboarding.placeholders.stateUP",
+      sampleTranscriptKey: "onboarding.transcripts.stateUP",
+    },
+  ],
+}

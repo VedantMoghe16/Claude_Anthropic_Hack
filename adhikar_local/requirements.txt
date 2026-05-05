@@ -1,0 +1,32 @@
+# Adhikar-Aina — local dependencies
+# No pyspark, no databricks-connect, no databricks-sdk
+# No PyTorch / sentence-transformers required (uses TF-IDF via sklearn)
+
+# ── Semantic search (TF-IDF, no GPU needed) ──────────────────────────────────
+scikit-learn>=1.3.0
+scipy>=1.11.0
+
+# ── Data processing ───────────────────────────────────────────────────────────
+pandas>=2.0.0
+numpy>=1.24.0,<2.1
+
+# ── PDF generation ────────────────────────────────────────────────────────────
+reportlab>=4.1.0
+
+# ── Telegram bot ─────────────────────────────────────────────────────────────
+python-telegram-bot>=21.0
+
+# ── Web backend ───────────────────────────────────────────────────────────────
+fastapi>=0.110.0
+uvicorn[standard]>=0.30.0
+flask>=3.0.0
+
+# ── Utilities ─────────────────────────────────────────────────────────────────
+pydantic>=2.5.0
+python-dotenv>=1.0.0
+openai>=1.0.0
+requests>=2.31.0
+
+# ── Optional: neural embeddings (uncomment if sentence-transformers is stable) ──
+# sentence-transformers>=2.7.0
+# faiss-cpu>=1.7.4
