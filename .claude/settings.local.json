@@ -6,7 +6,8 @@
       "Bash(python -c \"import fastapi, uvicorn, sklearn, pandas, reportlab, telegram, dotenv; print\\('All deps OK'\\)\")",
       "Bash(pkill -f \"python bot.py\")",
       "Bash(pkill -f \"adhikar_local/bot\")",
-      "Bash(pkill -9 -f \"bot.py\")"
+      "Bash(pkill -9 -f \"bot.py\")",
+      "Bash(python *)"
     ]
   },
   "enableAllProjectMcpServers": true,

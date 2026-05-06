@@ -8,12 +8,12 @@ import hashlib
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import anthropic
 import requests
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Response, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from openai import OpenAI
 
 # DATABRICKS REMOVED: from databricks import sql
 # Add adhikar_local to path so we can use local matching
@@ -24,13 +24,7 @@ if _LOCAL_DIR.exists():
 load_dotenv(dotenv_path=Path(__file__).parent.parent.parent / ".env", override=False)
 
 # ENV VARIABLES
-# DATABRICKS REMOVED: DATABRICKS_INSTANCE, DATABRICKS_TOKEN, DATABRICKS_JOB_ID
-OPENAI_API_KEY    = os.getenv("OPENAI_API_KEY")
-OPENAI_TTS_MODEL  = os.getenv("OPENAI_TTS_MODEL", "gpt-4o-mini-tts")
-OPENAI_TTS_VOICE  = os.getenv("OPENAI_TTS_VOICE", "alloy")
-OPENAI_TTS_URL    = os.getenv("OPENAI_TTS_URL", "https://api.openai.com/v1/audio/speech")
-OPENAI_CHAT_MODEL = os.getenv("OPENAI_CHAT_MODEL", "gpt-4.1-mini")
-OPENAI_RESPONSES_URL = os.getenv("OPENAI_RESPONSES_URL", "https://api.openai.com/v1/responses")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 SARVAM_API_KEY    = os.getenv("SARVAM_API_KEY", "")
 
 LANGUAGE_NAME_BY_CODE = {
@@ -41,7 +35,7 @@ LANGUAGE_NAME_BY_CODE = {
     "sd":"Sindhi","ta":"Tamil","te":"Telugu","ur":"Urdu",
 }
 
-openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY) if ANTHROPIC_API_KEY else None
 
 # ── Local database path ───────────────────────────────────────────────────────
 
@@ -253,7 +247,7 @@ def run_local_matching(user: Dict[str, Any]) -> List[Dict[str, Any]]:
         return []
 
 
-def infer_bronze_fields_with_gpt(user: Dict[str, Any]) -> Dict[str, Any]:
+def infer_bronze_fields_with_claude(user: Dict[str, Any]) -> Dict[str, Any]:
     fallback = {
         "district": "Satara", "taluka": "Karad", "village": "Umbraj",
         "ward_no": 1, "survey_no": "NA/1",
@@ -261,37 +255,33 @@ def infer_bronze_fields_with_gpt(user: Dict[str, Any]) -> Dict[str, Any]:
         "employment_days": user.get("employment_days") or 0,
         "is_tribal":    user.get("is_tribal")    or False,
         "has_bpl_card": False, "has_electricity": True,
-        "has_water_source": True, "data_source": "frontend_gpt_enriched",
+        "has_water_source": True, "data_source": "frontend_claude_enriched",
     }
-    if not OPENAI_API_KEY:
+    if not anthropic_client:
         return fallback
     prompt = (
         "Given this citizen intake JSON, infer missing bronze-layer profile fields for Indian welfare data. "
-        "Return strict JSON object only with keys: district, taluka, village, ward_no, survey_no, "
+        "Return ONLY a strict JSON object with keys: district, taluka, village, ward_no, survey_no, "
         "housing_status, employment_days, is_tribal, has_bpl_card, has_electricity, has_water_source, data_source. "
+        "No explanation, no markdown fences, just the raw JSON object. "
         f"Input JSON: {json.dumps(user)}"
     )
     try:
-        response = requests.post(
-            OPENAI_RESPONSES_URL,
-            headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
-            json={
-                "model": OPENAI_CHAT_MODEL,
-                "input": [
-                    {"role":"system","content":[{"type":"input_text","text":"You are a strict JSON generator for welfare profile normalization."}]},
-                    {"role":"user","content":[{"type":"input_text","text":prompt}]},
-                ],
-                "text": {"format": {"type": "json_object"}},
-            },
-            timeout=25,
+        message = anthropic_client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=512,
+            messages=[{"role": "user", "content": prompt}],
         )
-        response.raise_for_status()
-        text   = _extract_response_text(response.json())
-        parsed = json.loads(text) if text else {}
+        text = message.content[0].text.strip()
+        if text.startswith("```"):
+            text = text.split("```")[1]
+            if text.startswith("json"):
+                text = text[4:]
+        parsed = json.loads(text)
         if isinstance(parsed, dict):
             return {**fallback, **parsed}
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Claude enrichment error: {e}")
     return fallback
 
 
@@ -371,6 +361,23 @@ def check_eligibility(payload: CheckEligibilityRequest):
             "eligibility_explanation": explanation,
             "error":                  str(e),
         }
+
+
+@app.get("/api/citizen/by-aadhaar/{aadhar}")
+def get_citizen_by_aadhaar(aadhar: str, limit: int = 5):
+    """Look up citizen by 12-digit Aadhaar and return matched schemes. Used by Telegram bot."""
+    clean = "".join(c for c in aadhar if c.isdigit())
+    if len(clean) != 12:
+        raise HTTPException(status_code=400, detail="Aadhaar must be 12 digits")
+    try:
+        citizen = retrieve_citizen_from_silver(clean)
+        if not citizen:
+            return {"found": False, "citizen": None, "schemes": []}
+        schemes = run_local_matching({**citizen, "limit": limit})
+        return {"found": True, "citizen": citizen, "schemes": schemes}
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/citizen/{citizen_id}")
@@ -605,26 +612,15 @@ def text_to_speech(payload: TTSRequest):
         raise HTTPException(status_code=400, detail="Text is required")
     lang = (payload.language or "en").lower()
 
-    # Try Sarvam first (supports Indian languages natively)
-    if lang != "en":
-        wav_bytes = _sarvam_tts(text, lang)
-        if wav_bytes:
-            return Response(content=wav_bytes, media_type="audio/wav")
+    # Use Sarvam for all languages (en-IN for English)
+    wav_bytes = _sarvam_tts(text, lang if lang != "en" else "en-IN")
+    if wav_bytes:
+        return Response(content=wav_bytes, media_type="audio/wav")
 
-    # Fallback to OpenAI TTS
-    if not OPENAI_API_KEY:
-        raise HTTPException(status_code=500, detail="No TTS provider configured (set SARVAM_API_KEY or OPENAI_API_KEY)")
-    language_name = LANGUAGE_NAME_BY_CODE.get(lang, "English")
-    response = requests.post(
-        OPENAI_TTS_URL,
-        headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
-        json={"model": OPENAI_TTS_MODEL, "voice": OPENAI_TTS_VOICE,
-              "input": f"Speak this in {language_name}: {text}", "format": "mp3"},
-        timeout=45,
+    raise HTTPException(
+        status_code=503,
+        detail="TTS unavailable. Set SARVAM_API_KEY to enable audio. Browser TTS will be used as fallback."
     )
-    if response.status_code != 200:
-        raise HTTPException(status_code=502, detail=f"OpenAI TTS failed: {response.text}")
-    return Response(content=response.content, media_type="audio/mpeg")
 
 
 @app.post("/api/stt")
@@ -656,17 +652,7 @@ async def speech_to_text(file: UploadFile = File(...), language: str = "hi-IN"):
             except Exception:
                 pass
 
-        # Fallback to OpenAI Whisper
-        if not OPENAI_API_KEY or openai_client is None:
-            raise HTTPException(status_code=500, detail="No STT provider configured")
-        transcript = openai_client.audio.transcriptions.create(
-            model="whisper-1",
-            file=(file.filename or "audio.wav", audio_content, file.content_type or "audio/wav"),
-            response_format="json",
-            timeout=45.0,
-        )
-        text = transcript.text.strip() if transcript.text else ""
-        return {"ok": True, "text": text, "transcript": text}
+        raise HTTPException(status_code=503, detail="STT unavailable — Sarvam API failed. Set SARVAM_API_KEY.")
     except HTTPException:
         raise
     except Exception as e:
@@ -749,47 +735,255 @@ def generate_adhikar_certificate(payload: AdhikarCertificateRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _sarvam_translate(text: str, lang: str) -> str:
+    """Translate text to lang using Sarvam. Falls back to original on any error."""
+    if not text or lang in ("en", ""):
+        return text
+    if not SARVAM_API_KEY:
+        return text
+    lang_map = {
+        "hi":"hi-IN","bn":"bn-IN","mr":"mr-IN","ta":"ta-IN","te":"te-IN",
+        "gu":"gu-IN","kn":"kn-IN","ml":"ml-IN","pa":"pa-IN","or":"or-IN",
+        "as":"as-IN","ur":"ur-IN",
+    }
+    target = lang_map.get(lang.lower(), lang if "-" in lang else None)
+    if not target:
+        return text
+    try:
+        r = requests.post(
+            "https://api.sarvam.ai/translate",
+            headers={"api-subscription-key": SARVAM_API_KEY, "Content-Type": "application/json"},
+            json={
+                "input": text[:1000], "source_language_code": "en-IN",
+                "target_language_code": target, "speaker_gender": "Female",
+                "mode": "formal", "model": "mayura:v1", "enable_preprocessing": False,
+            },
+            timeout=20,
+        )
+        r.raise_for_status()
+        return r.json().get("translated_text", text) or text
+    except Exception:
+        return text
+
+
 def _build_certificate_html(cert_data: Dict[str, Any]) -> str:
-    lang = (cert_data.get("language","en") or "en").lower()
-    if lang not in CERTIFICATE_TRANSLATIONS:
-        lang = "en"
-    t       = CERTIFICATE_TRANSLATIONS[lang]
+    lang    = (cert_data.get("language", "en") or "en").lower()
     citizen = cert_data["citizen_profile"]
     elig    = cert_data["eligibility_criteria"]
 
-    reasons = []
-    if elig.get("income_bracket"):    reasons.append(f"Income Bracket: {elig['income_bracket']}")
-    if elig.get("land_category"):     reasons.append(f"Land Category: {elig['land_category']}")
-    if elig.get("occupation_category"): reasons.append(f"Occupation: {elig['occupation_category']}")
-    elig_text = "</li><li>".join(reasons) if reasons else "Meets scheme eligibility criteria"
+    def T(text: str) -> str:
+        return _sarvam_translate(text, lang)
 
-    return f"""<!DOCTYPE html><html><head><meta charset="UTF-8"><style>
-body{{font-family:Arial,sans-serif;line-height:1.6;color:#333;max-width:900px;margin:0 auto}}
-.header{{text-align:center;border-bottom:3px solid #16a34a;padding:20px 0;margin-bottom:20px}}
-.header h1{{color:#16a34a;margin:0;font-size:28px}}
-.section{{margin:20px 0;padding:15px;background:#f9fafb;border-left:4px solid #16a34a;border-radius:4px}}
-.section h2{{color:#16a34a;margin-top:0}}
-.legal-section{{background:#fef3c7;border-left:4px solid #f59e0b;padding:15px;border-radius:4px;margin:20px 0}}
-.footer{{margin-top:30px;padding-top:20px;border-top:1px solid #ddd;text-align:center;color:#666;font-size:12px}}
-table{{width:100%;border-collapse:collapse;margin:10px 0}}th,td{{padding:10px;text-align:left;border:1px solid #ddd}}
-th{{background:#16a34a;color:white}}
-</style></head><body>
-<div class="header"><h1>{t['title']}</h1><p>{t['subtitle']}</p></div>
-<div class="section"><h2>✅ {t['eligible']}</h2>
-<p><strong>{t['certifies']}</strong></p>
-<p><strong>{t['citizen_id']}:</strong> {cert_data['citizen_id']} &nbsp;|&nbsp;
-<strong>{t['scheme_name']}:</strong> {cert_data['scheme_name']}</p>
-<p><strong>{t['district']}:</strong> {citizen.get('district','N/A')} &nbsp;|&nbsp;
-<strong>{t['status']}:</strong> <span style="color:#16a34a;font-weight:bold">{t['eligible_status']}</span></p>
+    # Translate dynamic content
+    scheme_name  = cert_data["scheme_name"]
+    scheme_desc  = T(cert_data["scheme_description"])
+    citizen_name = citizen.get("name") or citizen.get("citizen_id", "Citizen")
+    district     = citizen.get("district", "N/A")
+    category     = citizen.get("caste_category", citizen.get("category", "N/A"))
+    occupation   = citizen.get("occupation", citizen.get("occupation_category", "N/A"))
+    income_br    = elig.get("income_bracket", citizen.get("income_bracket", "N/A"))
+    land_cat     = elig.get("land_category",  citizen.get("land_category",  ""))
+    occ_cat      = elig.get("occupation_category", occupation)
+
+    cert_id   = cert_data["certificate_id"]
+    gen_date  = cert_data["generated_date"]
+
+    elig_rows = ""
+    for label, val in [
+        (T("Income Bracket"), income_br),
+        (T("Occupation"),     occ_cat),
+        (T("Land Category"),  land_cat),
+        (T("Category"),       category),
+    ]:
+        if val and val != "N/A":
+            elig_rows += f"<tr><td>{label}</td><td><span class='badge'>✓ {val}</span></td></tr>"
+
+    legal_text = T(
+        "You have the right to: (1) Appeal any rejection in writing within 30 days. "
+        "(2) File an RTI application under RTI Act 2005. "
+        "(3) Seek free legal aid — DLSA Helpline: 1800-233-4415 (toll-free). "
+        "(4) Approach the District Collector or Lokayukta if benefits are wrongfully denied. "
+        "(5) File a complaint in Consumer Court under Consumer Protection Act 2019."
+    )
+    warning  = T("If anyone denies your rights — this certificate is legal proof. "
+                 "Demand a written explanation within 7 days.")
+    claim_en = (
+        f"I am {citizen_name}. My Citizen ID is {cert_data['citizen_id']}.\n"
+        f"I am legally entitled to '{scheme_name}'.\n"
+        f"Please process my application immediately."
+    )
+    claim = T(claim_en)
+
+    footer_line1 = T("This Adhikar Certificate is official proof of eligibility for government welfare schemes.")
+    footer_line2 = T("Generated by ADHIKAR — Sovereign Citizen Rights Platform | Claude Hackathon by Anthropic")
+
+    return f"""<!DOCTYPE html>
+<html lang="{lang}">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+  body {{ font-family: 'Georgia', 'Times New Roman', serif; background: #f4f1eb; color: #1a1a2e; }}
+  .page {{ max-width: 860px; margin: 24px auto; background: #fff; }}
+  .frame-outer {{ border: 3px double #1a3a6b; margin: 14px; padding: 3px; }}
+  .frame-inner {{ border: 1px solid #c8a44e; padding: 28px 32px; position: relative; }}
+  .corner {{ position: absolute; color: #c8a44e; font-size: 18px; line-height: 1; }}
+  .corner-tl {{ top: 6px; left: 8px; }} .corner-tr {{ top: 6px; right: 8px; }}
+  .corner-bl {{ bottom: 6px; left: 8px; }} .corner-br {{ bottom: 6px; right: 8px; }}
+
+  /* HEADER */
+  .header {{ text-align: center; padding-bottom: 18px; margin-bottom: 0; border-bottom: 2px solid #1a3a6b; }}
+  .emblem {{ font-size: 36px; margin-bottom: 4px; }}
+  .gov-line {{ font-size: 10px; letter-spacing: 5px; text-transform: uppercase; color: #555; margin-bottom: 6px; }}
+  .cert-title {{ font-size: 32px; font-weight: 900; color: #1a3a6b; letter-spacing: 3px; margin: 4px 0 2px; }}
+  .cert-subtitle {{ font-size: 12px; color: #c8a44e; font-style: italic; letter-spacing: 1px; }}
+
+  /* CERT ID BANNER */
+  .id-banner {{ background: #1a3a6b; color: #fff; text-align: center; padding: 8px 16px;
+                font-size: 11px; letter-spacing: 2px; margin: 16px -32px; }}
+  .verified {{ display: inline-block; background: #14532d; color: #fff; padding: 2px 10px;
+               border-radius: 20px; font-size: 10px; letter-spacing: 1px; font-weight: bold; }}
+
+  /* SECTIONS */
+  .section {{ margin: 18px 0; }}
+  .section-header {{ background: #1a3a6b; color: #fff; padding: 7px 14px; font-size: 10px;
+                     letter-spacing: 2px; text-transform: uppercase; font-weight: bold; font-family: Arial, sans-serif; }}
+  .section-body {{ border: 1px solid #dde; border-top: none; padding: 14px 16px; font-size: 13px; line-height: 1.7; }}
+
+  /* INFO GRID */
+  .info-grid {{ display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }}
+  .info-item label {{ display: block; font-size: 9px; text-transform: uppercase; letter-spacing: 1px;
+                      color: #888; margin-bottom: 2px; font-family: Arial, sans-serif; }}
+  .info-item span {{ font-size: 13px; font-weight: 700; color: #1a1a2e; }}
+
+  /* TABLE */
+  table {{ width: 100%; border-collapse: collapse; font-size: 12px; }}
+  th {{ background: #1a3a6b; color: #fff; padding: 9px 12px; text-align: left;
+        font-size: 10px; letter-spacing: 1px; font-family: Arial, sans-serif; }}
+  td {{ padding: 9px 12px; border-bottom: 1px solid #eee; vertical-align: top; }}
+  tr:nth-child(even) td {{ background: #f8f9fc; }}
+  .badge {{ display: inline-block; background: #14532d; color: #fff; padding: 2px 10px;
+            border-radius: 12px; font-size: 10px; font-weight: bold; font-family: Arial, sans-serif; }}
+
+  /* CLAIM SCRIPT */
+  .claim-box {{ background: #f8f9fc; border-left: 3px solid #1a3a6b; padding: 14px 16px;
+                font-family: 'Courier New', monospace; font-size: 12px; line-height: 1.8;
+                white-space: pre-wrap; color: #1a3a6b; }}
+
+  /* LEGAL BOX */
+  .legal-box {{ background: #fffbeb; border: 1px solid #c8a44e; padding: 14px 16px; font-size: 12px; line-height: 1.7; }}
+  .legal-box strong {{ color: #b45309; }}
+
+  /* FOOTER */
+  .footer {{ display: grid; grid-template-columns: 1fr auto 1fr; gap: 16px; align-items: center;
+             margin-top: 20px; padding-top: 14px; border-top: 2px solid #1a3a6b; }}
+  .footer-left, .footer-right {{ font-size: 9px; color: #888; font-family: Arial, sans-serif; line-height: 1.6; }}
+  .footer-right {{ text-align: right; }}
+  .seal {{ width: 76px; height: 76px; border: 2px solid #1a3a6b; border-radius: 50%;
+           display: flex; flex-direction: column; align-items: center; justify-content: center;
+           margin: 0 auto; text-align: center; font-size: 9px; color: #1a3a6b;
+           font-weight: bold; letter-spacing: 1px; font-family: Arial, sans-serif; }}
+  .seal-icon {{ font-size: 20px; margin-bottom: 2px; }}
+
+  /* WARNING */
+  .warning {{ background: #7f1d1d; color: #fff; text-align: center; padding: 10px 20px;
+              font-weight: bold; font-size: 12px; letter-spacing: 0.5px; margin-top: 18px;
+              font-family: Arial, sans-serif; }}
+  @media print {{
+    body {{ background: #fff; }}
+    .page {{ margin: 0; box-shadow: none; }}
+  }}
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="frame-outer"><div class="frame-inner">
+    <span class="corner corner-tl">✦</span><span class="corner corner-tr">✦</span>
+    <span class="corner corner-bl">✦</span><span class="corner corner-br">✦</span>
+
+    <div class="header">
+      <div class="emblem">⚖</div>
+      <div class="gov-line">Government of India &nbsp;·&nbsp; भारत सरकार</div>
+      <div class="cert-title">ADHIKAR</div>
+      <div class="cert-subtitle">Certificate of Entitlement &amp; Citizen Rights — अधिकार प्रमाणपत्र</div>
+    </div>
+
+    <div class="id-banner">
+      CERTIFICATE ID: {cert_id} &nbsp;·&nbsp; DATE: {gen_date}
+      &nbsp;·&nbsp; <span class="verified">✓ VERIFIED ELIGIBLE</span>
+    </div>
+
+    <div class="section">
+      <div class="section-header">&#x1F464; {T("Citizen Information")}</div>
+      <div class="section-body">
+        <div class="info-grid">
+          <div class="info-item"><label>{T("Full Name")}</label><span>{citizen_name}</span></div>
+          <div class="info-item"><label>{T("Citizen ID")}</label><span>{cert_data['citizen_id']}</span></div>
+          <div class="info-item"><label>{T("District")}</label><span>{district}</span></div>
+          <div class="info-item"><label>{T("Occupation")}</label><span>{occupation}</span></div>
+          <div class="info-item"><label>{T("Category")}</label><span>{category}</span></div>
+          <div class="info-item"><label>{T("Income Bracket")}</label><span>{income_br}</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-header">&#x1F4CB; {T("Scheme Eligibility")}</div>
+      <div class="section-body">
+        <table>
+          <tr><th>{T("Scheme Name")}</th><th>{T("Status")}</th></tr>
+          <tr>
+            <td><strong>{scheme_name}</strong></td>
+            <td><span class="badge">✓ {T("Eligible")}</span></td>
+          </tr>
+        </table>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-header">&#x2714; {T("Why You Are Eligible")}</div>
+      <div class="section-body">
+        <table>{elig_rows}</table>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-header">&#x1F4C4; {T("Scheme Overview & Benefits")}</div>
+      <div class="section-body">{scheme_desc}</div>
+    </div>
+
+    <div class="section">
+      <div class="section-header">&#x1F5E3; {T("Claim Script — What to Say to Officials")}</div>
+      <div class="section-body"><div class="claim-box">{claim}</div></div>
+    </div>
+
+    <div class="section">
+      <div class="section-header">&#x2696; {T("Your Legal Rights & Recourse")}</div>
+      <div class="section-body">
+        <div class="legal-box"><strong>⚖ {T("Know Your Rights")}:</strong><br/>{legal_text}</div>
+      </div>
+    </div>
+
+    <div class="footer">
+      <div class="footer-left">
+        {footer_line1}<br/>
+        RTI Act 2005 · NSAP · Consumer Protection Act 2019<br/>
+        Legal Services Authorities Act 1987
+      </div>
+      <div class="seal">
+        <div class="seal-icon">⚖</div>
+        ADHIKAR<br/>VERIFIED
+      </div>
+      <div class="footer-right">
+        {footer_line2}<br/>
+        {T("Certificate ID")}: {cert_id}<br/>
+        {T("Date")}: {gen_date}
+      </div>
+    </div>
+
+    <div class="warning">⚖ {warning}</div>
+
+  </div></div>
 </div>
-<div class="section"><h2>📋 {t['why_eligible']}</h2>
-<p><strong>{t['meet_criteria']}</strong></p><ul><li>{elig_text}</li></ul></div>
-<div class="section"><h2>📄 {t['overview']}</h2>
-<p><strong>{cert_data['scheme_name']}</strong></p><p>{cert_data['scheme_description']}</p></div>
-<div class="legal-section"><h2>⚖️ {t['legal_rights']}</h2>
-<p>You have the right to appeal, file RTI, seek free legal aid (DLSA: 1800-233-4415), and approach Lokayukta for corruption.
-If benefits are denied: request written explanation within 7 days, escalate to District Collector, file in Consumer Court if needed.</p></div>
-<div class="footer">
-<p>{t['footer_line1']}</p><p>{t['footer_line2']}</p><p>{t['footer_line3']}</p>
-<p>Date: {cert_data['generated_date']} | Certificate ID: {cert_data['certificate_id']}</p>
-</div></body></html>"""
+</body></html>"""

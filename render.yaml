@@ -1,0 +1,59 @@
+# Render Blueprint — Adhikar (Claude Hackathon 2025)
+# Deploy all three services from a single repo.
+# https://render.com/docs/blueprint-spec
+
+services:
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # 1. Backend API  (FastAPI + SQLite + TF-IDF matching)
+  # ────────────────────────────────────────────────────────────────────────────
+  - type: web
+    name: adhikar-backend
+    env: python
+    rootDir: WEBSITE/backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    plan: free
+    healthCheckPath: /api/demo-citizens
+    envVars:
+      - key: ANTHROPIC_API_KEY
+        sync: false          # set in Render dashboard
+      - key: SARVAM_API_KEY
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false          # used by notifier.py for push notifications
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # 2. Telegram Bot  (API-driven background worker)
+  # ────────────────────────────────────────────────────────────────────────────
+  - type: worker
+    name: adhikar-bot
+    env: python
+    rootDir: adhikar_local
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    plan: free
+    envVars:
+      - key: TELEGRAM_TOKEN
+        sync: false          # set in Render dashboard
+      - key: SARVAM_API_KEY
+        sync: false
+      - key: BACKEND_URL
+        sync: false          # set to https://adhikar-backend.onrender.com
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # 3. React Frontend  (static site — built with Vite)
+  # ────────────────────────────────────────────────────────────────────────────
+  - type: web
+    name: adhikar-frontend
+    env: static
+    rootDir: WEBSITE/frontend
+    buildCommand: npm install && npm run build
+    staticPublishPath: dist
+    envVars:
+      - key: VITE_API_BASE_URL
+        sync: false          # set to https://adhikar-backend.onrender.com
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
