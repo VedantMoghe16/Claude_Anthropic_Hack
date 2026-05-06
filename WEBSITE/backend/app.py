@@ -21,7 +21,7 @@ _LOCAL_DIR = Path(__file__).parent.parent.parent / "adhikar_local"
 if _LOCAL_DIR.exists():
     sys.path.insert(0, str(_LOCAL_DIR))
 
-load_dotenv()
+load_dotenv(dotenv_path=Path(__file__).parent.parent.parent / ".env", override=False)
 
 # ENV VARIABLES
 # DATABRICKS REMOVED: DATABRICKS_INSTANCE, DATABRICKS_TOKEN, DATABRICKS_JOB_ID
@@ -452,6 +452,95 @@ def register_user(payload: RegisterUserRequest):
     except Exception as e:
         import traceback; traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+class AddSchemeRequest(BaseModel):
+    scheme_id:        Optional[str]   = None
+    scheme_name:      str
+    min_income:       Optional[float] = 0.0
+    max_income:       Optional[float] = 100_000_000.0
+    occupation:       Optional[str]   = "any"
+    max_land:         Optional[float] = 999_999.0
+    category:         Optional[str]   = "ANY"
+    benefit:          str
+    eligibility_text: Optional[str]   = ""
+    details:          Optional[str]   = ""
+    scheme_category:  Optional[str]   = ""
+    ministry:         Optional[str]   = "Government of India"
+    level:            Optional[str]   = "Central"
+    tags:             Optional[str]   = ""
+    notify:           Optional[bool]  = True
+
+
+@app.post("/api/add-scheme")
+def add_scheme(payload: AddSchemeRequest):
+    """Add a new scheme and optionally notify all eligible Telegram-linked citizens."""
+    import hashlib, sqlite3
+
+    scheme = payload.dict()
+    notify_flag = scheme.pop("notify", True)
+
+    if not scheme.get("scheme_id"):
+        scheme["scheme_id"] = "SCH-" + hashlib.sha256(
+            scheme["scheme_name"].encode()
+        ).hexdigest()[:10].upper()
+
+    db = _db_path()
+    _ensure_local_db(db)
+    with sqlite3.connect(db) as conn:
+        conn.execute("""
+            INSERT OR REPLACE INTO schemes VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """, (
+            scheme["scheme_id"], scheme["scheme_name"],
+            scheme.get("min_income", 0), scheme.get("max_income", 1e8),
+            scheme.get("occupation", "any"), scheme.get("max_land", 1e6),
+            scheme.get("category", "ANY"), scheme["benefit"],
+            scheme.get("eligibility_text", ""), scheme.get("details", ""),
+            scheme.get("scheme_category", ""), scheme.get("ministry", ""),
+            scheme.get("level", ""), scheme.get("tags", ""),
+        ))
+        conn.commit()
+
+    notification_stats = None
+    if notify_flag:
+        try:
+            sys.path.insert(0, str(_LOCAL_DIR))
+            from notifier import notify_new_scheme
+            notification_stats = notify_new_scheme(scheme)
+        except Exception as e:
+            notification_stats = {"error": str(e)}
+
+    return {
+        "ok":                 True,
+        "scheme_id":          scheme["scheme_id"],
+        "scheme_name":        scheme["scheme_name"],
+        "notification_stats": notification_stats,
+    }
+
+
+@app.get("/api/demo-citizens")
+def get_demo_citizens():
+    """Return a small set of demo citizens so the UI can show testable Aadhaar numbers."""
+    try:
+        with sqlite3.connect(_db_path()) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute("""
+                SELECT citizen_id, aadhar, name, district, state,
+                       occupation, annual_income, caste_category, age, gender
+                FROM citizens
+                WHERE citizen_id IN ('CIT-00001','CIT-00002','CIT-00003','CIT-00004','CIT-00005')
+                   OR aadhar = '999999999999'
+                LIMIT 6
+            """).fetchall()
+        demos = [dict(r) for r in rows]
+        # Mask Aadhaar: show first 4 + last 4
+        for d in demos:
+            aadhaar = str(d.get("aadhar", ""))
+            d["aadhar_masked"] = aadhaar[:4] + "XXXX" + aadhaar[-4:] if len(aadhaar) == 12 else aadhaar
+            d["aadhar_display"] = aadhaar  # full Aadhaar for copy-paste in demo
+        return {"ok": True, "demo_citizens": demos}
+    except Exception as e:
+        return {"ok": False, "error": str(e), "demo_citizens": []}
 
 
 @app.get("/api/get-results/{citizen_id}")

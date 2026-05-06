@@ -8,6 +8,11 @@ Central configuration — all paths, model name, token.
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+# Load root .env (two levels up from adhikar_local/)
+load_dotenv(dotenv_path=Path(__file__).parent.parent / ".env", override=False)
+
 BASE_DIR  = Path(__file__).parent
 DATA_DIR  = BASE_DIR / "data"
 CERTS_DIR = BASE_DIR / "certificates"

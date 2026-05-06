@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"import sqlite3; conn = sqlite3.connect\\('data/adhikar.db'\\); print\\('citizens:', conn.execute\\('SELECT COUNT\\(*\\) FROM citizens'\\).fetchone\\(\\)\\); print\\('schemes:', conn.execute\\('SELECT COUNT\\(*\\) FROM schemes'\\).fetchone\\(\\)\\); conn.close\\(\\)\")",
+      "Bash(chmod +x *)",
+      "Bash(python -c \"import fastapi, uvicorn, sklearn, pandas, reportlab, telegram, dotenv; print\\('All deps OK'\\)\")",
+      "Bash(pkill -f \"python bot.py\")",
+      "Bash(pkill -f \"adhikar_local/bot\")",
+      "Bash(pkill -9 -f \"bot.py\")"
+    ]
+  },
+  "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": [
+    "databricks"
+  ]
+}

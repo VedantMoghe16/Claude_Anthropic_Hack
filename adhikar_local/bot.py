@@ -32,6 +32,7 @@ from telegram.ext import (
     Application, CallbackQueryHandler, CommandHandler,
     ContextTypes, MessageHandler, filters,
 )
+from telegram.constants import ParseMode
 
 from config import TELEGRAM_TOKEN
 
@@ -106,6 +107,9 @@ _HELP_EN = (
     "Commands:\n"
     "/start — Start the bot\n"
     "/language — Choose your language\n"
+    "/demo — Show sample Aadhaar numbers to try\n"
+    "/myid — Show your Telegram chat ID\n"
+    "/link <citizen_id> — Link your account to a citizen profile\n"
     "/help — Show this message\n\n"
     "Usage:\n"
     "Send your 12-digit Aadhaar number (digits only, no spaces).\n"
@@ -137,6 +141,23 @@ _NO_SCHEMES_EN = (
 )
 
 _PROCESSING_EN = "Processing Aadhaar {masked}... please wait."
+
+_DEMO_EN = (
+    "Demo Aadhaar numbers you can test with:\n\n"
+    "{entries}\n\n"
+    "Send any of these 12-digit numbers to see their eligible schemes."
+)
+
+_MYID_EN = "Your Telegram Chat ID is: {chat_id}\n\nShare this with the admin to link your account to a citizen profile."
+
+_LINK_USAGE_EN = (
+    "Usage: /link <citizen_id>\n"
+    "Example: /link CIT-00002\n\n"
+    "This links your Telegram account to that citizen's profile so you receive policy notifications."
+)
+
+_LINK_NOT_FOUND_EN = "Citizen ID '{citizen_id}' not found in the database."
+_LINK_SUCCESS_EN   = "Linked! Your Telegram is now connected to:\n\nName: {name}\nDistrict: {district}, {state}\nOccupation: {occupation}\n\nYou will receive notifications when new schemes match your profile."
 
 
 # ── Handlers ──────────────────────────────────────────────────────────────────
@@ -171,6 +192,106 @@ async def callback_lang(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     confirm_en = f"Language set to {lang_name}. Now send your 12-digit Aadhaar number."
     msg = _translate(confirm_en, chat_id)
     await query.edit_message_text(msg)
+
+
+async def cmd_myid(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    msg = _translate(_MYID_EN.format(chat_id=chat_id), chat_id)
+    await update.message.reply_text(msg)
+
+
+async def cmd_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id  = update.effective_chat.id
+    username = update.effective_user.username if update.effective_user else None
+
+    if not context.args:
+        await update.message.reply_text(_translate(_LINK_USAGE_EN, chat_id))
+        return
+
+    citizen_id = context.args[0].strip().upper()
+
+    try:
+        import sqlite3
+        from config import DB_PATH
+
+        with sqlite3.connect(str(DB_PATH)) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT * FROM citizens WHERE citizen_id=? OR aadhar=? LIMIT 1",
+                (citizen_id, citizen_id)
+            ).fetchone()
+
+        if not row:
+            await update.message.reply_text(
+                _translate(_LINK_NOT_FOUND_EN.format(citizen_id=citizen_id), chat_id)
+            )
+            return
+
+        citizen = dict(row)
+        with sqlite3.connect(str(DB_PATH)) as conn:
+            conn.execute("""
+                INSERT OR REPLACE INTO telegram_user_mapping
+                (citizen_id, telegram_chat_id, telegram_username, updated_at)
+                VALUES (?,?,?,datetime('now'))
+            """, (citizen["citizen_id"], str(chat_id), username or ""))
+            conn.commit()
+
+        msg = _translate(
+            _LINK_SUCCESS_EN.format(
+                name=citizen["name"],
+                district=citizen["district"],
+                state=citizen["state"],
+                occupation=citizen["occupation"],
+            ),
+            chat_id,
+        )
+        await update.message.reply_text(msg)
+        logger.info("Linked chat_id=%s to citizen_id=%s (%s)",
+                    chat_id, citizen["citizen_id"], citizen["name"])
+
+    except Exception as exc:
+        logger.error("Link error: %s", exc, exc_info=True)
+        await update.message.reply_text(
+            _translate(f"Error linking account: {exc}", chat_id)
+        )
+
+
+async def cmd_demo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    try:
+        from match import get_citizen
+        import sqlite3
+        from config import DB_PATH
+
+        with sqlite3.connect(str(DB_PATH)) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute("""
+                SELECT aadhar, name, district, state, occupation, annual_income, caste_category
+                FROM citizens
+                WHERE citizen_id IN ('CIT-00001','CIT-00002','CIT-00003','CIT-00004','CIT-00005')
+                   OR aadhar = '999999999999'
+                LIMIT 6
+            """).fetchall()
+
+        if not rows:
+            await update.message.reply_text(_translate(
+                "No demo citizens found. Ask the admin to run setup.", chat_id))
+            return
+
+        lines = []
+        for r in rows:
+            lines.append(
+                f"  {r['aadhar']}  —  {r['name']}, {r['district']}\n"
+                f"     {r['occupation'].title()}, Income: Rs {int(r['annual_income']):,}, {r['caste_category']}"
+            )
+        entries = "\n\n".join(lines)
+        msg = _translate(_DEMO_EN.format(entries=entries), chat_id)
+        await update.message.reply_text(msg)
+    except Exception as exc:
+        logger.error("Demo command error: %s", exc, exc_info=True)
+        await update.message.reply_text(
+            _translate("Could not load demo citizens. Try sending any 12-digit Aadhaar.", chat_id)
+        )
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -238,6 +359,17 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logger.error("Exception while handling update %s", update, exc_info=context.error)
+    if isinstance(update, Update) and update.effective_message:
+        try:
+            await update.effective_message.reply_text(
+                f"An internal error occurred: {context.error}"
+            )
+        except Exception:
+            pass
+
+
 def main() -> None:
     token = TELEGRAM_TOKEN
     if not token:
@@ -251,11 +383,15 @@ def main() -> None:
     app.add_handler(CommandHandler("start",    cmd_start))
     app.add_handler(CommandHandler("language", cmd_language))
     app.add_handler(CommandHandler("help",     cmd_help))
+    app.add_handler(CommandHandler("demo",     cmd_demo))
+    app.add_handler(CommandHandler("myid",     cmd_myid))
+    app.add_handler(CommandHandler("link",     cmd_link))
     app.add_handler(CallbackQueryHandler(callback_lang, pattern=r"^lang:"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    app.add_error_handler(error_handler)
 
     logger.info("ADHIKAR Bot started. Ctrl+C to stop.")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 
 if __name__ == "__main__":
